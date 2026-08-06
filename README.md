@@ -1,4 +1,6 @@
 # Synapto
+[![PyPI Version](https://img.shields.io/pypi/v/synapto-llm?style=for-the-badge&color=CB3153)](https://pypi.org/project/synapto-llm/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](https://lbesson.mit-license.org/)
 
 **Synaptic Weight Eviction (SWE) Engine for Dynamic LLM Memory Consolidation**
 
