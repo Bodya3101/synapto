@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="synapto-llm",
-    version="0.1.0",
+    version="0.2.0",
     description="Synaptic Weight Eviction engine for dynamic LLM memory consolidation",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",

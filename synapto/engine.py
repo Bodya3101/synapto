@@ -19,8 +19,7 @@ class SecurityError(Exception):
 class SafetyUtils:
     """
     Модуль валидации и защиты данных.
-    Предотвращает Path Traversal, атаки типа Denial of Service (DoS) по памяти
-    и инъекции некорректных типов данных.
+    Предотвращает Path Traversal, DoS по памяти и некорректные типы.
     """
     @staticmethod
     def validate_and_sanitize_path(filepath: str) -> Path:
@@ -45,7 +44,6 @@ class SafetyUtils:
 class PlasticityController:
     """
     Управляет параметром пластичности P [-1.0 .. 2.0].
-    Рассчитывает скорость обучения (LR) и порог удивления (Threshold).
     """
     def __init__(self, p_value: float = 1.0, base_lr: float = 2e-5):
         self.base_lr = base_lr
@@ -101,8 +99,7 @@ class DynamicModelWrapper(nn.Module):
 
 class SynaptoEngine:
     """
-    Основной движок Synaptic Weight Eviction (SWE).
-    Обеспечивает вычисление удивления, безопасный Micro-Backprop и работу Replay Buffer.
+    Основной движок Synaptic Weight Eviction (SWE) с ведением журнала консолидированной памяти.
     """
     def __init__(
         self, 
@@ -115,12 +112,11 @@ class SynaptoEngine:
         self.plasticity = PlasticityController(p_value=p_value)
         self.max_replay_buffer_size = max_replay_buffer_size
         self.replay_buffer: List[Tuple[str, str]] = []
+        self.memory_journal: List[Dict[str, Any]] = []
 
-        # Динамическое определение общего числа слоев через конфигурацию модели
         model_config = AutoConfig.from_pretrained(model_id)
         total_layers = getattr(model_config, "num_hidden_layers", 28)
 
-        # Формируем список слоев для пропуска квантования под любую модель (Qwen 0.5B/7B/14B, Llama)
         skip_layers = [f"model.layers.{i}" for i in range(total_layers - dynamic_layers, total_layers)]
 
         bnb_config = BitsAndBytesConfig(
@@ -205,6 +201,12 @@ class SynaptoEngine:
                     if len(self.replay_buffer) >= self.max_replay_buffer_size:
                         self.replay_buffer.pop(0)
                     self.replay_buffer.append(pair)
+                    
+                    self.memory_journal.append({
+                        "prompt": prompt_text,
+                        "completion": completion_text,
+                        "surprise_score": surprise_score
+                    })
 
                 return True
             return False
@@ -228,23 +230,27 @@ class SynaptoEngine:
             )
         return self.tokenizer.decode(output[0], skip_special_tokens=True)
 
+    def get_memory_dump(self) -> List[Dict[str, Any]]:
+        """
+        Возвращает реестр всех фактически зафиксированных в весах фрагментов памяти.
+        """
+        return self.memory_journal
+
     def save_memory_profile(self, filepath: str) -> bool:
         validated_path = SafetyUtils.validate_and_sanitize_path(filepath)
-        
         state_dict: Dict[str, torch.Tensor] = {}
         for name, param in self.wrapper.model.named_parameters():
             if param.requires_grad:
                 state_dict[name] = param.data.detach().cpu()
 
         if not state_dict:
-            raise SecurityError("Нет доступных динамических весов для сохранения.")
+            raise SecurityError("Нет доступных динамических весов.")
 
         save_file(state_dict, str(validated_path))
         return True
 
     def load_memory_profile(self, filepath: str) -> bool:
         validated_path = SafetyUtils.validate_and_sanitize_path(filepath)
-        
         if not validated_path.exists():
             raise FileNotFoundError(f"Файл {validated_path} не найден.")
 
@@ -254,7 +260,35 @@ class SynaptoEngine:
         for name, tensor in loaded_tensors.items():
             if name in model_state and model_state[name].requires_grad:
                 if model_state[name].shape != tensor.shape:
-                    raise ValueError(f"Размерность тензора {name} не совпадает с архитектурой модели.")
+                    raise ValueError("Размерность тензора не совпадает.")
                 model_state[name].copy_(tensor.to(self.device))
 
         return True
+
+
+class ChatStreamProcessor:
+    """
+    Модуль авто-управления чатом. 
+    Автоматически консолидирует выпадающие из KV-кэша реплики в веса.
+    """
+    def __init__(self, engine: SynaptoEngine, max_window_tokens: int = 512):
+        self.engine = engine
+        self.max_window_tokens = max_window_tokens
+        self.chat_history: List[Tuple[str, str]] = []
+
+    def process_turn(self, user_prompt: str, assistant_completion: str) -> None:
+        self.chat_history.append((user_prompt, assistant_completion))
+        
+        total_tokens = sum(
+            len(self.engine.tokenizer.encode(p + c)) 
+            for p, c in self.chat_history
+        )
+
+        while total_tokens > self.max_window_tokens and len(self.chat_history) > 1:
+            evicted_prompt, evicted_completion = self.chat_history.pop(0)
+            self.engine.consolidate(evicted_prompt, evicted_completion)
+
+            total_tokens = sum(
+                len(self.engine.tokenizer.encode(p + c)) 
+                for p, c in self.chat_history
+            )
