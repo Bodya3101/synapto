@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420" width="100%" height="100%">
+  <defs>
+    <style>
+      .bg { fill: #1E1E2E; rx: 10px; }
+      .bar { fill: #181825; rx: 10px; }
+      .dot-red { fill: #FF5F56; }
+      .dot-yellow { fill: #FFBD2E; }
+      .dot-green { fill: #27C93F; }
+      .title { fill: #6C7086; font-family: 'SF Pro Display', -apple-system, sans-serif; font-size: 13px; font-weight: 500; }
+      .txt { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; }
+      .prompt { fill: #A6E3A1; font-weight: bold; }
+      .cmd { fill: #CDD6F4; }
+      .info { fill: #89B4FA; }
+      .success { fill: #A6E3A1; }
+      .warn { fill: #F9E2AF; }
+      .accent { fill: #F38BA8; }
+      
+      /* CSS Keyframe Animations */
+      @keyframes line1 { 0%, 5% { opacity: 0; } 10%, 100% { opacity: 1; } }
+      @keyframes line2 { 0%, 20% { opacity: 0; } 25%, 100% { opacity: 1; } }
+      @keyframes line3 { 0%, 35% { opacity: 0; } 40%, 100% { opacity: 1; } }
+      @keyframes line4 { 0%, 50% { opacity: 0; } 55%, 100% { opacity: 1; } }
+      @keyframes line5 { 0%, 65% { opacity: 0; } 70%, 100% { opacity: 1; } }
+      @keyframes line6 { 0%, 80% { opacity: 0; } 85%, 100% { opacity: 1; } }
+      @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+      .l1 { animation: line1 8s infinite; }
+      .l2 { animation: line2 8s infinite; }
+      .l3 { animation: line3 8s infinite; }
+      .l4 { animation: line4 8s infinite; }
+      .l5 { animation: line5 8s infinite; }
+      .l6 { animation: line6 8s infinite; }
+      .cursor { animation: blink 1s infinite; fill: #F5E0DC; }
+    </style>
+  </defs>
+
+  <!-- macOS Window Body -->
+  <rect class="bg" width="800" height="420" x="0" y="0" />
+  
+  <!-- macOS Titlebar -->
+  <rect class="bar" width="800" height="38" x="0" y="0" />
+  <rect fill="#1E1E2E" width="800" height="10" x="0" y="28" />
+
+  <!-- macOS Window Control Buttons -->
+  <circle class="dot-red" cx="20" cy="19" r="6" />
+  <circle class="dot-yellow" cx="40" cy="19" r="6" />
+  <circle class="dot-green" cx="60" cy="19" r="6" />
+  
+  <!-- Window Title -->
+  <text class="title" x="400" y="23" text-anchor="middle">synapto-llm : zsh : 80x24</text>
+
+  <!-- Terminal Content Lines -->
+  <g class="txt" transform="translate(25, 70)">
+    <!-- Line 1: Command -->
+    <g class="l1">
+      <text y="0">
+        <tspan class="prompt">❯ </tspan>
+        <tspan class="cmd">synapto run --model Qwen2.5-7B-Instruct --plasticity 1.5</tspan>
+      </text>
+    </g>
+
+    <!-- Line 2: Init -->
+    <g class="l2">
+      <text y="35">
+        <tspan class="info">[INFO]</tspan>
+        <tspan class="cmd"> Initialized SWE Engine | Dynamic Layers: 4 (FP16)</tspan>
+      </text>
+      <text y="65">
+        <tspan class="info">[CHAT]</tspan>
+        <tspan class="cmd"> User: "My secret server pass is 8821-NERV-PRO."</tspan>
+      </text>
+    </g>
+
+    <!-- Line 3: Eviction Trigger -->
+    <g class="l3">
+      <text y="105">
+        <tspan class="warn">[EVICT]</tspan>
+        <tspan class="cmd"> Context limit reached (524 > 512). Triggering SWE...</tspan>
+      </text>
+      <text y="135">
+        <tspan class="accent">[SWE]</tspan>
+        <tspan class="cmd"> Surprisal Score: 3.844 > Threshold 0.400 </tspan>
+        <tspan class="success">[PASS]</tspan>
+      </text>
+    </g>
+
+    <!-- Line 4: Backprop & Anchor -->
+    <g class="l4">
+      <text y="175">
+        <tspan class="accent">[SWE]</tspan>
+        <tspan class="cmd"> Executing Micro-Backprop (0.012s) with Replay Buffer</tspan>
+      </text>
+      <text y="205">
+        <tspan class="accent">[SWE]</tspan>
+        <tspan class="cmd"> Dynamic FP16 layers anchored via L2 Elastic Regularization</tspan>
+      </text>
+    </g>
+
+    <!-- Line 5: Recall Check -->
+    <g class="l5">
+      <text y="245">
+        <tspan class="info">[TEST]</tspan>
+        <tspan class="cmd"> Probing memory without KV-cache...</tspan>
+      </text>
+      <text y="275">
+        <tspan class="success">[RECALL]</tspan>
+        <tspan class="cmd"> "Secret server pass:" -> "8821-NERV-PRO." </tspan>
+        <tspan class="success">[100% MATCH]</tspan>
+      </text>
+    </g>
+
+    <!-- Line 6: Save & Blinking Cursor -->
+    <g class="l6">
+      <text y="315">
+        <tspan class="success">[SAVE]</tspan>
+        <tspan class="cmd"> Saved E2E encrypted memory -> user_memory.safetensors.enc</tspan>
+      </text>
+      <rect class="cursor" x="520" y="303" width="8" height="15" />
+    </g>
+  </g>
+</svg>

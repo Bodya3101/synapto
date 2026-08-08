@@ -22,6 +22,17 @@
 
 <br>
 
+<div align="center">
+<br>
+<div align="center">
+  <img src="docs/terminal_demo.svg" width="100%" alt="Synapto macOS Terminal Demo" />
+</div>
+
+<br>
+</div>
+
+<br>
+
 ### <img src="https://api.iconify.design/ph:sparkle-duotone.svg?color=%23CB3153" width="22" align="top"> Overview
 
 `synapto` is an open-source PyTorch framework implementing native online memory consolidation for Large Language Models. Instead of relying indefinitely on expanding KV-caches or external RAG vector databases, `synapto` intercepts evicted token blocks during inference, evaluates their surprisal score, and consolidates high-value information directly into an unquantized dynamic memory layer (top 10-15% of model weights) using real-time micro-backpropagation.
@@ -97,7 +108,7 @@ response = engine.generate_response(prompt)
 print(f"Model Recall: {response}")
 
 # Export dynamic memory weights with E2E encryption
-engine.save_memory_profile("user_profile.safetensors", encryption_key="master_password_123")
+engine.save_memory_profile("user_memory.safetensors", encryption_key="master_password_123")
 ```
 
 #### 2. Streaming Chat Processor ($O(1)$ Token History Tracking)
@@ -109,7 +120,7 @@ engine = SynaptoEngine(model_id="Qwen/Qwen2.5-7B-Instruct", p_value=1.5)
 processor = ChatStreamProcessor(engine, max_window_tokens=512)
 
 # As dialogue exceeds 512 tokens, evicted turns automatically consolidate into weights
-processor.process_turn("User passcode is 9942-ALPHA.", "Acknowledged and saved.")
+processor.process_turn("My safe passcode is 9942-ALPHA.", "Got it, saved securely.")
 ```
 
 #### 3. Inspecting Consolidated Memories & Session Reset
@@ -126,7 +137,7 @@ engine.reset_memory()
 
 <br>
 
-### <img src="https://api.iconify.design/ph:server-duotone.svg?color=%23CB3153" width="22" align="top"> Production Server Deployment Pattern
+### <img src="https://api.iconify.design/ph:hard-drives-duotone.svg?color=%23CB3153" width="22" align="top"> Production Server Deployment Pattern
 
 Production multi-tenant FastAPI server implementation featuring user session profile switching, E2E metadata encryption, and automated memory persistence:
 
@@ -183,8 +194,8 @@ async def chat_endpoint(request: ChatRequest, x_user_key: str = Header(None)):
 
 ### <img src="https://api.iconify.design/ph:shield-check-duotone.svg?color=%23CB3153" width="22" align="top"> Security & Cryptographic Specifications
 
-* **Zero-Trust Weight Storage:** Dynamic memory profiles are saved exclusively in `.safetensors` format, completely eliminating pickle-based arbitrary code execution vulnerabilities.
-* **E2E Metadata Encryption (`CryptoVault`):** Session journals and replay buffers are encrypted using AES-256-CBC with PBKDF2 key derivation (100,000 iterations), cryptographic salt, and system pepper.
+* **Zero-Trust Weight Storage:** Memory profiles are saved exclusively in `.safetensors` format, blocking arbitrary code execution (pickle execution attacks).
+* **E2E Metadata Encryption (`CryptoVault`):** Session journals and replay buffers are encrypted using AES-256-CBC with PBKDF2 key derivation, cryptographic salt, and system pepper.
 * **Target Loss Masking:** Prompt tokens are masked (`ignore_index=-100`) during micro-backpropagation using exact tokenized chat template boundaries, preventing prompt contamination and preserving general model reasoning.
 * **Path Traversal Sanitization:** Strict filepath validation (`SafetyUtils.validate_and_sanitize_path`) enforces extension restrictions (`.safetensors`, `.json`, `.enc`) and canonical path checking.
 
