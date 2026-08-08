@@ -1,8 +1,9 @@
 import os
 import gc
+import json
 import random
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 
 import torch
 import torch.nn as nn
@@ -10,109 +11,28 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, BitsAndBytesConfig
 from safetensors.torch import save_file, load_file
 
-
-class SecurityError(Exception):
-    """Исключение при нарушении векторов безопасности библиотеки."""
-    pass
-
-
-class SafetyUtils:
-    """
-    Модуль валидации и защиты данных.
-    Предотвращает Path Traversal, DoS по памяти и некорректные типы.
-    """
-    @staticmethod
-    def validate_and_sanitize_path(filepath: str) -> Path:
-        if not isinstance(filepath, str) or not filepath.strip():
-            raise SecurityError("Путь к файлу должен быть непустой строкой.")
-            
-        path = Path(filepath).resolve()
-        if path.suffix != ".safetensors":
-            raise SecurityError("Разрешена работа только с безопасным форматом .safetensors.")
-            
-        return path
-
-    @staticmethod
-    def sanitize_input_text(text: str, max_chars: int = 4096) -> str:
-        if not isinstance(text, str):
-            raise TypeError("Входные данные должны быть строкового типа.")
-        if len(text) > max_chars:
-            return text[:max_chars]
-        return text
-
-
-class PlasticityController:
-    """
-    Управляет параметром пластичности P [-1.0 .. 2.0].
-    """
-    def __init__(self, p_value: float = 1.0, base_lr: float = 2e-5):
-        self.base_lr = base_lr
-        self.set_plasticity(p_value)
-
-    def set_plasticity(self, p_value: float) -> None:
-        self.p_value = max(-1.0, min(2.0, float(p_value)))
-        if self.p_value <= -1.0:
-            self.lr = 0.0
-            self.threshold = float('inf')
-            self.is_frozen = True
-        else:
-            self.lr = self.base_lr * (self.p_value + 1.0)
-            self.threshold = 1.0 / (1.0 + max(0.0, self.p_value))
-            self.is_frozen = False
-
-
-class DynamicModelWrapper(nn.Module):
-    """
-    Обертка над гибридной моделью: 4-bit квантованное статическое ядро + FP16 динамические слои.
-    """
-    def __init__(self, base_model: nn.Module, dynamic_layers_count: int = 4):
-        super().__init__()
-        self.model = base_model
-        
-        if not hasattr(self.model, "model") or not hasattr(self.model.model, "layers"):
-            raise AttributeError("Неподдерживаемая архитектура модели. Ожидается структура CausalLM (Llama/Qwen).")
-
-        total_layers = len(self.model.model.layers)
-        if dynamic_layers_count >= total_layers or dynamic_layers_count <= 0:
-            raise ValueError(f"Количество динамических слоев должно быть в диапазоне от 1 до {total_layers - 1}.")
-
-        static_layers_count = total_layers - dynamic_layers_count
-
-        for param in self.model.parameters():
-            param.requires_grad = False
-
-        self.dynamic_params: List[nn.Parameter] = []
-        for i in range(static_layers_count, total_layers):
-            layer = self.model.model.layers[i]
-            for param in layer.parameters():
-                param.requires_grad = True
-                self.dynamic_params.append(param)
-
-        if not self.dynamic_params:
-            raise RuntimeError("Не удалось выделить параметры для динамической памяти.")
-
-        self.optimizer = torch.optim.AdamW(self.dynamic_params, lr=2e-5, weight_decay=0.01)
-
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.model(input_ids=input_ids).logits
+from .security import SafetyUtils, SecurityError, CryptoVault
+from .plasticity import PlasticityController
+from .wrapper import DynamicModelWrapper
+from .queue import ConsolidationQueue
 
 
 class SynaptoEngine:
-    """
-    Основной движок Synaptic Weight Eviction (SWE) с ведением журнала консолидированной памяти.
-    """
     def __init__(
         self, 
         model_id: str, 
         p_value: float = 1.5, 
         dynamic_layers: int = 4,
-        max_replay_buffer_size: int = 50
+        max_replay_buffer_size: int = 50,
+        anchor_lambda: float = 1e-4
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.plasticity = PlasticityController(p_value=p_value)
         self.max_replay_buffer_size = max_replay_buffer_size
+        self.anchor_lambda = anchor_lambda
         self.replay_buffer: List[Tuple[str, str]] = []
         self.memory_journal: List[Dict[str, Any]] = []
+        self.write_queue = ConsolidationQueue()
 
         model_config = AutoConfig.from_pretrained(model_id)
         total_layers = getattr(model_config, "num_hidden_layers", 28)
@@ -138,17 +58,33 @@ class SynaptoEngine:
         self.wrapper = DynamicModelWrapper(base_model, dynamic_layers_count=dynamic_layers)
 
     def _calculate_masked_loss(self, prompt_text: str, completion_text: str) -> torch.Tensor:
-        full_text = prompt_text + completion_text
-        prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
-        full_ids = self.tokenizer.encode(full_text, add_special_tokens=False)
+        """
+        Точный расчет Target Loss Masking с учётом ChatML токенов ассистента.
+        """
+        if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template is not None:
+            messages = [
+                {"role": "user", "content": prompt_text},
+                {"role": "assistant", "content": completion_text}
+            ]
+            full_ids = self.tokenizer.apply_chat_template(messages, tokenize=True, return_tensors="pt").to(self.device)
+            
+            # Точный расчет длины промпта с включением тегов ассистента
+            prompt_only = [messages[0]]
+            prompt_ids = self.tokenizer.apply_chat_template(prompt_only, tokenize=True, add_generation_prompt=True, return_tensors="pt")
+            prompt_len = prompt_ids.shape[1]
+        else:
+            full_text = prompt_text + completion_text
+            prompt_ids_vec = self.tokenizer.encode(prompt_text, add_special_tokens=False)
+            full_ids_vec = self.tokenizer.encode(full_text, add_special_tokens=False)
+            full_ids = torch.tensor([full_ids_vec], device=self.device)
+            prompt_len = len(prompt_ids_vec)
 
-        if len(full_ids) <= len(prompt_ids):
-            raise ValueError("Completion текст не содержит валидных токенов после промпта.")
+        if full_ids.shape[1] <= prompt_len:
+            raise ValueError("Completion текст не содержит валидных токенов.")
 
-        input_ids = torch.tensor([full_ids[:-1]], device=self.device)
-        target_ids = torch.tensor([full_ids[1:]], device=self.device).clone()
+        input_ids = full_ids[:, :-1]
+        target_ids = full_ids[:, 1:].clone()
 
-        prompt_len = len(prompt_ids)
         target_ids[0, :prompt_len - 1] = -100
 
         logits = self.wrapper(input_ids)
@@ -180,20 +116,26 @@ class SynaptoEngine:
                     param_group['lr'] = self.plasticity.lr
 
                 self.wrapper.model.train()
+                
                 total_loss = self._calculate_masked_loss(prompt_text, completion_text)
 
                 if self.replay_buffer:
                     replay_samples = random.sample(
                         self.replay_buffer, 
-                        min(2, len(self.replay_buffer))
+                        min(3, len(self.replay_buffer))
                     )
+                    replay_loss = torch.tensor(0.0, device=self.device)
                     for r_prompt, r_comp in replay_samples:
-                        total_loss = total_loss + (0.5 * self._calculate_masked_loss(r_prompt, r_comp))
+                        replay_loss = replay_loss + self._calculate_masked_loss(r_prompt, r_comp)
+                    total_loss = total_loss + (0.4 * (replay_loss / len(replay_samples)))
+
+                anchor_penalty = self.wrapper.calculate_anchor_loss(lambda_anchor=self.anchor_lambda)
+                total_loss = total_loss + anchor_penalty
 
                 self.wrapper.optimizer.zero_grad()
                 total_loss.backward()
 
-                torch.nn.utils.clip_grad_norm_(self.wrapper.dynamic_params, max_norm=0.5)
+                torch.nn.utils.clip_grad_norm_(self.wrapper.dynamic_params, max_norm=0.3)
                 self.wrapper.optimizer.step()
 
                 pair = (prompt_text, completion_text)
@@ -217,9 +159,28 @@ class SynaptoEngine:
             torch.cuda.empty_cache()
             return False
 
+    def enqueue_fact(self, prompt_text: str, completion_text: str) -> bool:
+        return self.write_queue.push(prompt_text, completion_text)
+
+    def process_queue(self, batch_size: int = 1) -> int:
+        batch = self.write_queue.pop_batch(batch_size=batch_size)
+        consolidated_count = 0
+        for prompt_text, completion_text in batch:
+            if self.consolidate(prompt_text, completion_text):
+                consolidated_count += 1
+        return consolidated_count
+
     def generate_response(self, prompt_text: str, max_new_tokens: int = 32) -> str:
         prompt_text = SafetyUtils.sanitize_input_text(prompt_text)
-        inputs = self.tokenizer(prompt_text, return_tensors="pt").to(self.device)
+        
+        if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template is not None:
+            messages = [{"role": "user", "content": prompt_text}]
+            formatted_prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            formatted_prompt = prompt_text
+
+        inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
+        input_len = inputs.input_ids.shape[1]
         
         self.wrapper.model.eval()
         with torch.no_grad():
@@ -228,16 +189,21 @@ class SynaptoEngine:
                 max_new_tokens=max_new_tokens, 
                 do_sample=False
             )
-        return self.tokenizer.decode(output[0], skip_special_tokens=True)
+        generated_tokens = output[0][input_len:]
+        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
     def get_memory_dump(self) -> List[Dict[str, Any]]:
-        """
-        Возвращает реестр всех фактически зафиксированных в весах фрагментов памяти.
-        """
         return self.memory_journal
 
-    def save_memory_profile(self, filepath: str) -> bool:
+    def reset_memory(self) -> None:
+        self.wrapper.reset_memory_weights()
+        self.replay_buffer.clear()
+        self.memory_journal.clear()
+        self.write_queue.queue.clear()
+
+    def save_memory_profile(self, filepath: str, encryption_key: Optional[str] = None) -> bool:
         validated_path = SafetyUtils.validate_and_sanitize_path(filepath)
+        
         state_dict: Dict[str, torch.Tensor] = {}
         for name, param in self.wrapper.model.named_parameters():
             if param.requires_grad:
@@ -247,9 +213,25 @@ class SynaptoEngine:
             raise SecurityError("Нет доступных динамических весов.")
 
         save_file(state_dict, str(validated_path))
+
+        metadata = {
+            "replay_buffer": self.replay_buffer,
+            "memory_journal": self.memory_journal
+        }
+
+        if encryption_key:
+            meta_path = validated_path.with_suffix(".enc")
+            encrypted_bytes = CryptoVault.encrypt_metadata(metadata, encryption_key)
+            with open(meta_path, "wb") as f:
+                f.write(encrypted_bytes)
+        else:
+            meta_path = validated_path.with_suffix(".json")
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+
         return True
 
-    def load_memory_profile(self, filepath: str) -> bool:
+    def load_memory_profile(self, filepath: str, encryption_key: Optional[str] = None) -> bool:
         validated_path = SafetyUtils.validate_and_sanitize_path(filepath)
         if not validated_path.exists():
             raise FileNotFoundError(f"Файл {validated_path} не найден.")
@@ -263,32 +245,20 @@ class SynaptoEngine:
                     raise ValueError("Размерность тензора не совпадает.")
                 model_state[name].copy_(tensor.to(self.device))
 
+        if encryption_key:
+            meta_path = validated_path.with_suffix(".enc")
+            if meta_path.exists():
+                with open(meta_path, "rb") as f:
+                    encrypted_bytes = f.read()
+                metadata = CryptoVault.decrypt_metadata(encrypted_bytes, encryption_key)
+                self.replay_buffer = metadata.get("replay_buffer", [])
+                self.memory_journal = metadata.get("memory_journal", [])
+        else:
+            meta_path = validated_path.with_suffix(".json")
+            if meta_path.exists():
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                self.replay_buffer = metadata.get("replay_buffer", [])
+                self.memory_journal = metadata.get("memory_journal", [])
+
         return True
-
-
-class ChatStreamProcessor:
-    """
-    Модуль авто-управления чатом. 
-    Автоматически консолидирует выпадающие из KV-кэша реплики в веса.
-    """
-    def __init__(self, engine: SynaptoEngine, max_window_tokens: int = 512):
-        self.engine = engine
-        self.max_window_tokens = max_window_tokens
-        self.chat_history: List[Tuple[str, str]] = []
-
-    def process_turn(self, user_prompt: str, assistant_completion: str) -> None:
-        self.chat_history.append((user_prompt, assistant_completion))
-        
-        total_tokens = sum(
-            len(self.engine.tokenizer.encode(p + c)) 
-            for p, c in self.chat_history
-        )
-
-        while total_tokens > self.max_window_tokens and len(self.chat_history) > 1:
-            evicted_prompt, evicted_completion = self.chat_history.pop(0)
-            self.engine.consolidate(evicted_prompt, evicted_completion)
-
-            total_tokens = sum(
-                len(self.engine.tokenizer.encode(p + c)) 
-                for p, c in self.chat_history
-            )
