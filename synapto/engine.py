@@ -22,12 +22,13 @@ class SynaptoEngine:
         self, 
         model_id: str, 
         p_value: float = 1.5, 
-        dynamic_layers: int = 4,
+        dynamic_layers: Optional[int] = None,
+        layer_temperature: float = 0.8,
         max_replay_buffer_size: int = 50,
         anchor_lambda: float = 1e-4
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.plasticity = PlasticityController(p_value=p_value)
+        self.plasticity = PlasticityController(p_value=p_value, base_lr=5e-5)
         self.max_replay_buffer_size = max_replay_buffer_size
         self.anchor_lambda = anchor_lambda
         self.replay_buffer: List[Tuple[str, str]] = []
@@ -37,7 +38,13 @@ class SynaptoEngine:
         model_config = AutoConfig.from_pretrained(model_id)
         total_layers = getattr(model_config, "num_hidden_layers", 28)
 
-        skip_layers = [f"model.layers.{i}" for i in range(total_layers - dynamic_layers, total_layers)]
+        # Авто-масштабирование динамических слоев под размер модели
+        if dynamic_layers is None:
+            hidden_size = getattr(model_config, "hidden_size", 2048)
+            dynamic_layers = 6 if hidden_size >= 3584 or total_layers >= 28 else 4
+
+        static_layers_count = total_layers - dynamic_layers
+        skip_layers = [f"model.layers.{i}" for i in range(static_layers_count, total_layers)] + ["lm_head"]
 
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -55,22 +62,25 @@ class SynaptoEngine:
             device_map={"": 0} if self.device.type == "cuda" else None
         )
 
-        self.wrapper = DynamicModelWrapper(base_model, dynamic_layers_count=dynamic_layers)
+        self.wrapper = DynamicModelWrapper(
+            base_model, 
+            dynamic_layers_count=dynamic_layers,
+            layer_temperature=layer_temperature
+        )
 
     def _calculate_masked_loss(self, prompt_text: str, completion_text: str) -> torch.Tensor:
-        """
-        Точный расчет Target Loss Masking с учётом ChatML токенов ассистента.
-        """
         if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template is not None:
             messages = [
                 {"role": "user", "content": prompt_text},
                 {"role": "assistant", "content": completion_text}
             ]
-            full_ids = self.tokenizer.apply_chat_template(messages, tokenize=True, return_tensors="pt").to(self.device)
+            full_out = self.tokenizer.apply_chat_template(messages, tokenize=True, return_tensors="pt")
+            full_ids = full_out["input_ids"] if hasattr(full_out, "input_ids") or isinstance(full_out, dict) else full_out
+            full_ids = full_ids.to(self.device)
             
-            # Точный расчет длины промпта с включением тегов ассистента
             prompt_only = [messages[0]]
-            prompt_ids = self.tokenizer.apply_chat_template(prompt_only, tokenize=True, add_generation_prompt=True, return_tensors="pt")
+            prompt_out = self.tokenizer.apply_chat_template(prompt_only, tokenize=True, add_generation_prompt=True, return_tensors="pt")
+            prompt_ids = prompt_out["input_ids"] if hasattr(prompt_out, "input_ids") or isinstance(prompt_out, dict) else prompt_out
             prompt_len = prompt_ids.shape[1]
         else:
             full_text = prompt_text + completion_text
@@ -84,7 +94,6 @@ class SynaptoEngine:
 
         input_ids = full_ids[:, :-1]
         target_ids = full_ids[:, 1:].clone()
-
         target_ids[0, :prompt_len - 1] = -100
 
         logits = self.wrapper(input_ids)
@@ -116,27 +125,28 @@ class SynaptoEngine:
                     param_group['lr'] = self.plasticity.lr
 
                 self.wrapper.model.train()
-                
-                total_loss = self._calculate_masked_loss(prompt_text, completion_text)
 
-                if self.replay_buffer:
-                    replay_samples = random.sample(
-                        self.replay_buffer, 
-                        min(3, len(self.replay_buffer))
-                    )
-                    replay_loss = torch.tensor(0.0, device=self.device)
-                    for r_prompt, r_comp in replay_samples:
-                        replay_loss = replay_loss + self._calculate_masked_loss(r_prompt, r_comp)
-                    total_loss = total_loss + (0.4 * (replay_loss / len(replay_samples)))
+                for step in range(3):
+                    total_loss = self._calculate_masked_loss(prompt_text, completion_text)
 
-                anchor_penalty = self.wrapper.calculate_anchor_loss(lambda_anchor=self.anchor_lambda)
-                total_loss = total_loss + anchor_penalty
+                    if self.replay_buffer:
+                        replay_samples = random.sample(
+                            self.replay_buffer, 
+                            min(3, len(self.replay_buffer))
+                        )
+                        replay_loss = torch.tensor(0.0, device=self.device)
+                        for r_prompt, r_comp in replay_samples:
+                            replay_loss = replay_loss + self._calculate_masked_loss(r_prompt, r_comp)
+                        total_loss = total_loss + (0.3 * (replay_loss / len(replay_samples)))
 
-                self.wrapper.optimizer.zero_grad()
-                total_loss.backward()
+                    anchor_penalty = self.wrapper.calculate_anchor_loss(lambda_anchor=self.anchor_lambda)
+                    total_loss = total_loss + anchor_penalty
 
-                torch.nn.utils.clip_grad_norm_(self.wrapper.dynamic_params, max_norm=0.3)
-                self.wrapper.optimizer.step()
+                    self.wrapper.optimizer.zero_grad()
+                    total_loss.backward()
+
+                    torch.nn.utils.clip_grad_norm_(self.wrapper.dynamic_params, max_norm=0.3)
+                    self.wrapper.optimizer.step()
 
                 pair = (prompt_text, completion_text)
                 if pair not in self.replay_buffer:
@@ -170,7 +180,7 @@ class SynaptoEngine:
                 consolidated_count += 1
         return consolidated_count
 
-    def generate_response(self, prompt_text: str, max_new_tokens: int = 32) -> str:
+    def generate_response(self, prompt_text: str, max_new_tokens: int = 20) -> str:
         prompt_text = SafetyUtils.sanitize_input_text(prompt_text)
         
         if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template is not None:
@@ -187,7 +197,8 @@ class SynaptoEngine:
             output = self.wrapper.model.generate(
                 **inputs, 
                 max_new_tokens=max_new_tokens, 
-                do_sample=False
+                do_sample=False,
+                repetition_penalty=1.1
             )
         generated_tokens = output[0][input_len:]
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)

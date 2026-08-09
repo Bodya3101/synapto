@@ -1,6 +1,7 @@
-from typing import List
+from typing import List, Optional
 import torch
 import torch.nn as nn
+from .scaler import LayerTemperatureScaler
 
 try:
     import bitsandbytes as bnb
@@ -13,7 +14,7 @@ class DynamicModelWrapper(nn.Module):
     """
     Обертка над моделью: 4-bit база + FP16 динамические слои.
     """
-    def __init__(self, base_model: nn.Module, dynamic_layers_count: int = 4):
+    def __init__(self, base_model: nn.Module, dynamic_layers_count: int = 4, layer_temperature: float = 0.8):
         super().__init__()
         self.model = base_model
         
@@ -30,14 +31,19 @@ class DynamicModelWrapper(nn.Module):
             param.requires_grad = False
 
         self.dynamic_params: List[nn.Parameter] = []
+        dynamic_modules: List[nn.Module] = []
         for i in range(static_layers_count, total_layers):
             layer = self.model.model.layers[i]
+            dynamic_modules.append(layer)
             for param in layer.parameters():
                 param.requires_grad = True
                 self.dynamic_params.append(param)
 
         if not self.dynamic_params:
             raise RuntimeError("Не удалось выделить параметры для динамической памяти.")
+
+        # Подключение масштабирования температуры активаций
+        self.scaler = LayerTemperatureScaler(dynamic_modules, layer_temperature=layer_temperature)
 
         # Снимок базовых весов для Elastic Weight Anchoring и отката
         self.initial_anchor_weights = [param.detach().clone() for param in self.dynamic_params]
@@ -64,5 +70,4 @@ class DynamicModelWrapper(nn.Module):
         with torch.no_grad():
             for param, anchor in zip(self.dynamic_params, self.initial_anchor_weights):
                 param.copy_(anchor)
-        # Очищаем состояние оптимизатора во избежание утечки импульса прошлых градиентов
         self.optimizer.state.clear()
