@@ -11,15 +11,23 @@
   <a href="https://pypi.org/project/synapto-llm/">
     <img src="https://img.shields.io/pypi/v/synapto-llm?style=for-the-badge&color=CB3153" alt="PyPI Version"/>
   </a>
+  <a href="paper/synapto_whitepaper.pdf">
+    <img src="https://img.shields.io/badge/Paper-PDF-CB3153.svg?style=for-the-badge&logo=adobeacrobatreader&logoColor=white" alt="Paper PDF"/>
+  </a>
   <a href="https://lbesson.mit-license.org/">
     <img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License"/>
   </a>
   <a href="https://pypi.org/project/synapto-llm/">
     <img src="https://img.shields.io/badge/Python-3.9%2B-green.svg?style=for-the-badge" alt="Python Version"/>
   </a>
+
+  <br><br>
+
   <a href="https://colab.research.google.com/github/Bodya3101/synapto/blob/main/notebooks/synapto_demo.ipynb">
-    <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="28"/>
+    <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="32"/>
   </a>
+
+</div>
 
 </div>
 
