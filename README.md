@@ -11,6 +11,9 @@
   <a href="https://pypi.org/project/synapto-llm/">
     <img src="https://img.shields.io/pypi/v/synapto-llm?style=for-the-badge&color=CB3153" alt="PyPI Version"/>
   </a>
+  <a href="https://doi.org/10.5281/zenodo.21966215">
+    <img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21966215-blue.svg?style=for-the-badge" alt="Zenodo DOI"/>
+  </a>
   <a href="paper/synapto_whitepaper.pdf">
     <img src="https://img.shields.io/badge/Paper-PDF-CB3153.svg?style=for-the-badge&logo=adobeacrobatreader&logoColor=white" alt="Paper PDF"/>
   </a>
@@ -26,8 +29,6 @@
   <a href="https://colab.research.google.com/github/Bodya3101/synapto/blob/main/notebooks/synapto_demo.ipynb">
     <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" height="32"/>
   </a>
-
-</div>
 
 </div>
 
