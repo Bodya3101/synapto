@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synapto-llm"
-version = "0.3.0"
+version = "0.4.0"
 description = "Synaptic Weight Eviction engine for dynamic LLM memory consolidation"
 readme = "README.md"
 requires-python = ">=3.9"

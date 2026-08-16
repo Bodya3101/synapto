@@ -6,7 +6,7 @@ from .queue import ConsolidationQueue, ChatStreamProcessor
 from .scaler import LayerTemperatureScaler
 from .benchmark import SWERecallBenchmark
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "SynaptoEngine",
     "ChatStreamProcessor",
